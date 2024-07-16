@@ -1,12 +1,13 @@
 #!/bin/bash
 
 DEBUG_LOG() {
+    #updated to run in container
     if [ -z "$1" ]; then
         echo "Usage: DEBUG_LOG <log_message>"
         return 1
     fi
 
-    local log_file="/mnt/volume1/logs/esdb_cloud_init.log"
+    local log_file="/logs/esdb_cloud_init.log"
 
     if [ ! -f "$log_file" ]; then
         touch "$log_file" || {
@@ -22,7 +23,8 @@ DEBUG_LOG() {
 }
 
 LOG_COMMAND() {
-    local log_file="/mnt/volume1/logs/esdb_cloud_init.log"
+    #updated to run in container
+    local log_file="/logs/esdb_cloud_init.log"
     local current_time=$(date +"%Y-%m-%d %H:%M:%S")
 
     # Log command to be executed
@@ -53,61 +55,41 @@ CHECK_VARIABLE() {
 }
 
 get_secret_value() {
+    #updated to run in container
     local local_secret_name=$1
-    local local_secret_version=$2
-    if [ -z "$local_secret_version" ]; then
-        local_secret_version="AWSCURRENT"
-    fi
+    #simplifed for local container testing, will need to be updated to access Azure secrets from keyvault
+    # Replace hyphens with underscores in local_secret_name
+    local env_var_name="secret_${local_secret_name//-/_}"
 
-    local secret_id="${project}-${account_type}-"$local_secret_name"-${aws_region_shortcode}-${account_name}"
-   local secret_value;
+    # Directly assigning the value of the environment variable to secret_value
+    local secret_value=${!env_var_name}
 
-    retry_count=0
-    max_retries=3
-    while [ $retry_count -lt $max_retries ]; do
-        secret_value=$(aws secretsmanager get-secret-value --secret-id "$secret_id" --version-stage "$local_secret_version" --query SecretString --output text)
-        if [ $? -eq 0 ]; then
-            DEBUG_LOG "Successfully got value from Secret Manager for $secret_id"
-            break
-        else
-            DEBUG_LOG "Failed to get value from Secrets Manager for $secret_id. Retrying..."
-            retry_count=$((retry_count+1))
-            sleep 3
-        fi
-    done
-    if [ $? -ne 0 ]; then
-        DEBUG_LOG "Failed to get value from Secrets Manager for $secret_id"
+    if [ -z "$secret_value" ]; then
+        DEBUG_LOG "Environment variable $env_var_name is not set."
         exit 1
+    else
+        DEBUG_LOG "Successfully got value from environment variable $env_var_name"
     fi
-
     echo "$secret_value"
 }
 
 get_parameter_store_value() {
+    #updated to run in container
     local local_secret_name=$1
-    local param_id="${project}-${account_type}-$local_secret_name-${aws_region_shortcode}-${account_name}"
-    local retry_count=0
-    local max_retries=3
-    local param_value;
+    #simplifed for local container testing, will need to be updated to access Azure secrets from keyvault
+    # Replace hyphens with underscores in local_secret_name
+    local env_var_name="parameter_${local_secret_name//-/_}"
 
-    while [ $retry_count -lt $max_retries ]; do
-        param_value=$(aws ssm get-parameter --name "$param_id" --query "Parameter.Value" --output text --with-decryption)
-        if [ $? -eq 0 ]; then
-            DEBUG_LOG "Successfully got value from Parameter Store for $param_id"
-            break
-        else
-            DEBUG_LOG "Failed to get value from Parameter Store for $param_id. Retrying..."
-            retry_count=$((retry_count + 1))
-            sleep 3
-        fi
-    done
+    # Directly assigning the value of the environment variable to secret_value
+    local secret_value=${!env_var_name}
 
-    if [ $retry_count -eq $max_retries ]; then
-        DEBUG_LOG "Failed to get value from Parameter Store after $max_retries attempts. Exiting..."
+    if [ -z "$secret_value" ]; then
+        DEBUG_LOG "Environment variable $env_var_name is not set."
         exit 1
+    else
+        DEBUG_LOG "Successfully got value from environment variable $env_var_name"
     fi
-
-    echo "$param_value"
+    echo "$secret_value"
 }
 
 update_users_and_acl() {
@@ -204,38 +186,13 @@ update_users_and_acl() {
 }
 
 #SCRIPT
+
 # Set Region
 echo "Set Region to ap-southeast-2"
 export AWS_DEFAULT_REGION="ap-southeast-2"
 
 # Mount volumes
-TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-
-XVDB_VOLUME_ID=$(aws ec2 describe-volumes --filters Name=attachment.instance-id,Values="$INSTANCE_ID" Name=attachment.device,Values="/dev/xvdb" --query "Volumes[*].VolumeId" --output text | tr -d '-')
-XVDB_NAME=$(lsblk --output NAME,SERIAL | grep "$XVDB_VOLUME_ID" | awk '{print $1}')
-XVDB_VOLUME_NAME="/dev/$XVDB_NAME"
-
-XVDC_VOLUME_ID=$(aws ec2 describe-volumes --filters Name=attachment.instance-id,Values="$INSTANCE_ID" Name=attachment.device,Values="/dev/xvdc" --query "Volumes[*].VolumeId" --output text | tr -d '-')
-XVDC_NAME=$(lsblk --output NAME,SERIAL | grep "$XVDC_VOLUME_ID" | awk '{print $1}')
-XVDC_VOLUME_NAME="/dev/$XVDC_NAME"
-
-if [ -z "$XVDB_NAME" ]; then
-    echo "XVDB_NAME is empty. Mounting volumes aborted."
-elif [ -z "$XVDC_NAME" ]; then
-    echo "XVDC_NAME is empty. Mounting volumes aborted."
-else
-    mkfs.ext4 "$XVDB_VOLUME_NAME"
-    mkfs.ext4 "$XVDC_VOLUME_NAME"
-
-    mkdir /mnt/volume1
-    mkdir /mnt/volume2
-
-    echo "$XVDB_VOLUME_NAME    /mnt/volume1    ext4    defaults    0    1" >> /etc/fstab
-    echo "$XVDC_VOLUME_NAME    /mnt/volume2    ext4    defaults    0    1" >> /etc/fstab
-
-    mount -a
-fi
+# TODO mount volumes for scaleset here, currently docker-compose is handling it
 
 mkdir /mnt/volume1/configuration
 mkdir /mnt/volume1/logs
@@ -249,6 +206,11 @@ mkdir /mnt/volume2/index
 # Setup esdb node
 echo "Installing Eventstore"
 EVENTSTORE_SECRET_TOKEN=$(get_secret_value "eventstore-secret-token-secret")
+
+#tzdata python dependency non interactive install fix:
+export DEBIAN_FRONTEND=noninteractive
+export TZ=Pacific/Auckland
+
 curl -s https://$EVENTSTORE_SECRET_TOKEN:@packagecloud.io/install/repositories/EventStore/EventStore-Commercial/script.deb.sh | sudo bash
 sudo apt-get install eventstore-commercial=24.2.0
 
@@ -280,8 +242,7 @@ CHECK_VARIABLE "DOMAIN_NAME"
 EVENTSTORE_CONFIG=$(get_parameter_store_value "ec2-esdb-config")
 CHECK_VARIABLE "EVENTSTORE_CONFIG"
 
-CLOUDWATCH_CONFIG=$(get_parameter_store_value "ec2-esdb-cw-config")
-CHECK_VARIABLE "CLOUDWATCH_CONFIG"
+#TODO cloudwatch replacement config
 
 if [ -n "$EVENTSTORE_CONFIG" ]; then
     DEBUG_LOG "Creating Eventstore Config"
@@ -295,15 +256,7 @@ DEBUG_LOG "Setting ULIMITS"
 echo "eventstore soft nofile 50000" >> /etc/security/limits.conf
 echo "eventstore hard nofile 50000" >> /etc/security/limits.conf
 
-DEBUG_LOG "Setting up Cloudwatch Agent"
-LOG_COMMAND sudo wget https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-LOG_COMMAND sudo dpkg -i -E ./amazon-cloudwatch-agent.deb
-
-DEBUG_LOG "Creating Cloudwatch Config"
-echo "$CLOUDWATCH_CONFIG" > /opt/aws/amazon-cloudwatch-agent/bin/config.json
-
-DEBUG_LOG "Starting Cloudwatch Agent"
-LOG_COMMAND sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json
+#TODO logging agent config, previously we set up cloudwatch here
 
 DEBUG_LOG "Installing Certbot"
 LOG_COMMAND add-apt-repository ppa:certbot/certbot -y
@@ -329,7 +282,7 @@ IntHostAdvertiseAs: esdb-writenode-$IP_WITH_DASHES.$SUB_DOMAIN_NAME
 EOF
 
 DEBUG_LOG "Configure Eventstore Certs"
-BUCKET="${project}-${account_type}-s3-esdb-cert-${aws_region_shortcode}-${account_name}"
+BUCKET="${project}-${account_type}-s3-esdb-cert-${azure_region_shortcode}-${subscription_name}"
 PRIVATE_KEY="privkeyrsa.key"
 FULLCHAIN="fullchain.pem"
 CERT_EXIST=$(aws s3 ls "s3://$BUCKET/$PRIVATE_KEY")
@@ -369,7 +322,7 @@ touch /mnt/volume1/scripts/eventstore-db-scavenging.sh
 cat <<EOF >/mnt/volume1/scripts/eventstore-db-scavenging.sh
 #!/bin/bash
 
-secret_id="${project}-${account_type}-esdb-ops-password-${aws_region_shortcode}-${account_name}"
+secret_id="${project}-${account_type}-esdb-ops-password-${azure_region_shortcode}-${subscription_name}"
 OPS_SECRET=\$(aws ssm get-parameter --name "\$secret_id" --query "Parameter.Value" --output text --with-decryption)
 OPS_PASSWORD=\$(aws secretsmanager get-secret-value --secret-id \$OPS_SECRET --query SecretString --output text)
 if [ $? -ne 0 ]; then
